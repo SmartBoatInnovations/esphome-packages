@@ -1,0 +1,338 @@
+
+
+globals:
+
+  - id: initial_soc_global
+    type: float
+    restore_value: true
+    initial_value: '100.0'
+
+  - id: energy_in_last_global
+    type: float
+    restore_value: true
+    initial_value: '0'
+
+  - id: energy_out_last_global
+    type: float
+    restore_value: true
+    initial_value: '0'
+
+  - id: battery_capacity_global
+    type: float
+    restore_value: true
+    initial_value: '100.0'  
+
+  - id: charging_efficiency_global
+    type: float
+    restore_value: true
+    initial_value: '0.95'
+
+  - id: discharging_efficiency_global
+    type: float
+    restore_value: true
+    initial_value: '0.98'
+
+  - id: max_voltage_global
+    type: float
+    restore_value: true
+    initial_value: '14.0' 
+
+  - id: min_voltage_global
+    type: float
+    restore_value: true
+    initial_value: '12.0'
+
+sensor:
+
+# Import the Home Assistant voltage sensor
+  - platform: homeassistant
+    name: "ESP32 Pumps Battery Voltage"
+    id: esp32_pumps_battery_voltage
+    entity_id: sensor.esp32_pumps_battery_voltage
+    unit_of_measurement: "V"
+    accuracy_decimals: 2
+
+  # Power calculation (W) using actual battery voltage from Home Assistant
+  - platform: template
+    name: "LifePO4 Power"
+    id: lifepo4_power
+    unit_of_measurement: "W"
+    accuracy_decimals: 0
+    lambda: |-
+      if (!isnan(id(esp32_pumps_battery_voltage).state)) {
+        return id(lifepo4_current).state * id(esp32_pumps_battery_voltage).state;
+      } else {
+        ESP_LOGW("power", "Voltage sensor not ready. Using default 13.0V");
+        return id(lifepo4_current).state * 13.0;
+      }
+    update_interval: 1s
+    device_class: power
+    state_class: measurement
+
+  # Watt-hour calculation (Wh)
+  - platform: integration
+    name: "LifePO4 Energy"
+    id: lifepo4_energy
+    sensor: lifepo4_power  
+    unit_of_measurement: "Wh"
+    time_unit: h
+    accuracy_decimals: 0
+    state_class: total_increasing
+    device_class: energy
+    restore: true
+
+  # Total daily energy in kWh
+  - platform: total_daily_energy
+    name: "LifePO4 Daily Energy"
+    id: lifepo4_daily_energy
+    power_id: lifepo4_power 
+    unit_of_measurement: "kWh"
+    state_class: total_increasing
+    device_class: energy
+    accuracy_decimals: 0
+
+  # Power going into the battery (positive power, charging)
+  - platform: template
+    name: "LifePO4 Charging Power"
+    id: lifepo4_charging_power
+    unit_of_measurement: "W"
+    lambda: |-
+      if (id(lifepo4_power).state > 0) {
+        return abs(id(lifepo4_power).state);
+      } else {
+        return 0.0;
+      }
+    update_interval: 1s
+    device_class: power
+    state_class: measurement
+
+  # Power going out of the battery (negative power, discharging)
+  - platform: template
+    name: "LifePO4 Discharging Power"
+    id: lifepo4_discharging_power
+    unit_of_measurement: "W"
+    lambda: |-
+      if (id(lifepo4_power).state < 0) {
+        return abs(id(lifepo4_power).state);
+      } else {
+        return 0.0;
+      }
+    update_interval: 1s
+    device_class: power
+    state_class: measurement
+
+  # Integrating the charging power (Wh)
+  - platform: integration
+    name: "LifePO4 Energy In"
+    id: lifepo4_energy_in
+    sensor: lifepo4_charging_power
+    unit_of_measurement: "Wh"
+    time_unit: h
+    accuracy_decimals: 0
+    state_class: total_increasing
+    device_class: energy
+    restore: true
+
+  # Integrating the discharging power (Wh)
+  - platform: integration
+    name: "LifePO4 Energy Out"
+    id: lifepo4_energy_out
+    sensor: lifepo4_discharging_power
+    unit_of_measurement: "Wh"
+    time_unit: h
+    accuracy_decimals: 0
+    state_class: total_increasing
+    device_class: energy
+    restore: true
+
+  - platform: template
+    name: "LifePO4 SOC"
+    id: lifepo4_soc
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+    lambda: |-
+
+      float energy_in = id(lifepo4_energy_in).state;
+      float energy_out = id(lifepo4_energy_out).state;
+      float voltage = id(esp32_pumps_battery_voltage).state;
+
+      static int low_voltage_count = 0;
+      static int high_voltage_count = 0;
+
+      ESP_LOGI("soc", "Current SOC: %.2f%%", id(lifepo4_soc).state);
+
+      ESP_LOGI("soc", "Energy In: %.6f Wh, Energy Out: %.6f Wh", energy_in, energy_out);
+      ESP_LOGI("soc", "Energy In Last: %.6f Wh, Energy Out Last: %.6f Wh", id(energy_in_last_global), id(energy_out_last_global));
+
+      ESP_LOGI("soc", "Voltage: %.2fV, Max: %.2fV, Min: %.2fV", voltage, id(max_voltage_global), id(min_voltage_global));
+
+      // Check if energy sensors have valid data
+      if (isnan(energy_in) || isnan(energy_out) || isnan(voltage)) {
+        ESP_LOGW("soc", "Energy or voltage sensors not ready. Cannot compute SOC.");
+        return NAN;
+      }
+
+      if (voltage <= 0.0) {
+        ESP_LOGW("soc", "Voltage is zero or negative. Cannot compute SOC.");
+        return NAN;
+      }
+
+      // Max Voltage SOC correction using global values (100% SOC)
+      if (voltage >= id(max_voltage_global)) {
+        high_voltage_count++;
+        if (high_voltage_count >= 10) {  // Require 10 consecutive high voltage readings
+          id(initial_soc_global) = 100.0;
+          // Set energy last in and out to zero the energy delta
+          id(energy_in_last_global) = id(lifepo4_energy_in).state;
+          id(energy_out_last_global) = id(lifepo4_energy_out).state;
+
+          ESP_LOGI("soc", "Voltage dropped below min. SOC set to 100%%, energy delta reset.");
+          return 100.0;
+        }
+      } else {
+        high_voltage_count = 0;  // Reset count if voltage is back to normal
+      }
+
+      // Min Voltage SOC correction using global values (0% SOC)
+      if (voltage <= id(min_voltage_global)) {
+        low_voltage_count++;
+        if (low_voltage_count >= 10) {  // Require 10 consecutive low voltage readings
+          id(initial_soc_global) = 0.0;
+          // Set energy last in and out to zero the energy delta
+          id(energy_in_last_global) = id(lifepo4_energy_in).state;
+          id(energy_out_last_global) = id(lifepo4_energy_out).state;
+
+          ESP_LOGI("soc", "Voltage dropped below min. SOC set to 0%%, energy delta reset.");
+          return 0.0;
+        }
+      } else {
+        low_voltage_count = 0;  // Reset count if voltage is back to normal
+      }
+
+      // Calculate energy deltas since the last calculation
+      float delta_energy_in = energy_in - id(energy_in_last_global);
+      float delta_energy_out = energy_out - id(energy_out_last_global);
+
+      // Update the last known energy values for the next calculation
+      id(energy_in_last_global) = energy_in;
+      id(energy_out_last_global) = energy_out;
+
+      // Calculate net energy change since the last calculation
+      float net_energy = delta_energy_in - delta_energy_out;
+      float net_energy_ah = net_energy / voltage;
+
+      ESP_LOGI("soc", "Energy In Delta: %.2f Wh, Energy Out Delta: %.2f Wh, Net Energy: %.2f Wh , Net Energy AH: %.2f AH", delta_energy_in, delta_energy_out, net_energy, net_energy_ah);
+
+      // Apply charging or discharging efficiency
+      float efficiency = (net_energy > 0) ? id(charging_efficiency_global) : id(discharging_efficiency_global);
+      ESP_LOGI("soc", "Applying efficiency: %.2f", efficiency);
+
+      ESP_LOGI("soc", "Initial SOC: %.2f%%", id(initial_soc_global));
+
+      // Calculate SOC change based on efficiency-corrected net energy
+      float soc = id(initial_soc_global) + ((net_energy_ah * efficiency) / id(battery_capacity_global)) * 100.0;
+
+      // Clamp SOC between 0% and 100%
+      if (soc > 100.0) soc = 100.0;
+      if (soc < 0.0) soc = 0.0;
+
+      ESP_LOGI("soc", "Calculated SOC: %.2f%%", soc);
+
+      id(initial_soc_global) = soc;
+      return soc;
+    update_interval: 10s
+
+number:
+  - platform: template
+    name: "Initial SOC"
+    id: initial_soc_number
+    unit_of_measurement: "%"
+    min_value: 0.0
+    max_value: 100.0
+    step: 0.1
+    optimistic: true
+    restore_value: true
+    initial_value: 100.0
+    on_value:
+      - lambda: |-
+          id(initial_soc_global) = x;
+          
+          // Set energy last in and out to zero the energy delta
+          id(energy_in_last_global) = id(lifepo4_energy_in).state;
+          id(energy_out_last_global) = id(lifepo4_energy_out).state;
+          
+          ESP_LOGI("main", "SOC UPDATED. Initial SOC set to %.1f", x);
+          ESP_LOGI("main", "New Energy In Last: %.6f Wh, New Energy Out Last: %.6f Wh", id(energy_in_last_global), id(energy_out_last_global));
+
+          // Force SOC recalculation immediately
+          id(lifepo4_soc).update();
+
+  - platform: template
+    name: "Battery Capacity"
+    id: battery_capacity_number
+    unit_of_measurement: "Ah"
+    min_value: 0
+    max_value: 1000
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 100.0
+    on_value:
+      - lambda: |-
+          id(battery_capacity_global) = x;
+
+  - platform: template
+    name: "Max Voltage"
+    id: max_voltage_number
+    unit_of_measurement: "V"
+    min_value: 12.0
+    max_value: 16.0
+    step: 0.01
+    optimistic: true
+    restore_value: true
+    initial_value: 14.0
+    on_value:
+      - lambda: |-
+          id(max_voltage_global) = x;
+
+  - platform: template
+    name: "Min Voltage"
+    id: min_voltage_number
+    unit_of_measurement: "V"
+    min_value: 10.0
+    max_value: 13.0
+    step: 0.01
+    optimistic: true
+    restore_value: true
+    initial_value: 12.0
+    on_value:
+      - lambda: |-
+          id(min_voltage_global) = x;
+          
+  - platform: template
+    name: "Charging Efficiency"
+    id: charging_efficiency_number
+    unit_of_measurement: "%"
+    min_value: 1
+    max_value: 100
+    step: 0.1
+    optimistic: true
+    restore_value: true
+    initial_value: 95
+    on_value:
+      - lambda: |-
+          id(charging_efficiency_global) = x / 100.0;
+
+  - platform: template
+    name: "Discharging Efficiency"
+    id: discharging_efficiency_number
+    unit_of_measurement: "%"
+    min_value: 1
+    max_value: 100
+    step: 0.1
+    optimistic: true
+    restore_value: true
+    initial_value: 98
+    on_value:
+      - lambda: |-
+          id(discharging_efficiency_global) = x / 100.0;
