@@ -180,13 +180,13 @@ sensor:
       // Max Voltage SOC correction using global values (100% SOC)
       if (voltage >= id(max_voltage_global)) {
         high_voltage_count++;
-        if (high_voltage_count >= 5) {  // Require 5 consecutive high voltage readings
+        if (high_voltage_count >= 10) {  // Require 10 consecutive high voltage readings
           id(initial_soc_global) = 100.0;
           // Set energy last in and out to zero the energy delta
           id(energy_in_last_global) = id(lifepo4_energy_in).state;
           id(energy_out_last_global) = id(lifepo4_energy_out).state;
 
-          ESP_LOGI("soc", "Voltage higher than max. SOC set to 100%%, energy delta reset.");
+          ESP_LOGI("soc", "Voltage dropped below min. SOC set to 100%%, energy delta reset.");
           return 100.0;
         }
       } else {
@@ -196,7 +196,7 @@ sensor:
       // Min Voltage SOC correction using global values (0% SOC)
       if (voltage <= id(min_voltage_global)) {
         low_voltage_count++;
-        if (low_voltage_count >= 5) {  // Require 5 consecutive low voltage readings
+        if (low_voltage_count >= 10) {  // Require 10 consecutive low voltage readings
           id(initial_soc_global) = 0.0;
           // Set energy last in and out to zero the energy delta
           id(energy_in_last_global) = id(lifepo4_energy_in).state;
@@ -336,3 +336,21 @@ number:
     on_value:
       - lambda: |-
           id(discharging_efficiency_global) = x / 100.0;
+
+  - platform: template
+    name: "Virtual Grid Consumption"
+    id: virtual_grid_consumption
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total
+    lambda: |-
+      return 0.0;
+
+  - platform: template
+    name: "Virtual Grid Return"
+    id: virtual_grid_return
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total
+    lambda: |-
+      return 0.0;
