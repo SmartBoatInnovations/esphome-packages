@@ -145,23 +145,6 @@ sensor:
     device_class: energy
     restore: true
 
-  - platform: template
-    name: "Virtual Grid Consumption"
-    id: virtual_grid_consumption
-    unit_of_measurement: "kWh"
-    device_class: energy
-    state_class: total
-    lambda: |-
-      return 0.0;
-
-  - platform: template
-    name: "Virtual Grid Return"
-    id: virtual_grid_return
-    unit_of_measurement: "kWh"
-    device_class: energy
-    state_class: total
-    lambda: |-
-      return 0.0;
 
   - platform: template
     name: "LifePO4 SOC"
