@@ -44,26 +44,18 @@ globals:
 
 sensor:
 
-# Import the Home Assistant voltage sensor
-  - platform: homeassistant
-    name: "ESP32 Pumps Battery Voltage"
-    id: esp32_pumps_battery_voltage
-    entity_id: sensor.esp32_pumps_battery_voltage
-    unit_of_measurement: "V"
-    accuracy_decimals: 2
-
-  # Power calculation (W) using actual battery voltage from Home Assistant
+  # Power calculation (W) 
   - platform: template
-    name: "LifePO4 Power"
-    id: lifepo4_power
+    name: "Battery Power"
+    id: battery_power
     unit_of_measurement: "W"
     accuracy_decimals: 0
     lambda: |-
-      if (!isnan(id(esp32_pumps_battery_voltage).state)) {
-        return id(lifepo4_current).state * id(esp32_pumps_battery_voltage).state;
+      if (!isnan(id(battery_voltage).state)) {
+        return id(battery_current).state * id(battery_voltage).state;
       } else {
         ESP_LOGW("power", "Voltage sensor not ready. Using default 13.0V");
-        return id(lifepo4_current).state * 13.0;
+        return id(battery_current).state * 13.0;
       }
     update_interval: 1s
     device_class: power
@@ -71,9 +63,9 @@ sensor:
 
   # Watt-hour calculation (Wh)
   - platform: integration
-    name: "LifePO4 Energy"
-    id: lifepo4_energy
-    sensor: lifepo4_power  
+    name: "Battery Energy"
+    id: battery_energy
+    sensor: battery_power  
     unit_of_measurement: "Wh"
     time_unit: h
     accuracy_decimals: 0
@@ -83,9 +75,9 @@ sensor:
 
   # Total daily energy in kWh
   - platform: total_daily_energy
-    name: "LifePO4 Daily Energy"
-    id: lifepo4_daily_energy
-    power_id: lifepo4_power 
+    name: "Battery Daily Energy"
+    id: battery_daily_energy
+    power_id: battery_power 
     unit_of_measurement: "kWh"
     state_class: total_increasing
     device_class: energy
@@ -93,12 +85,12 @@ sensor:
 
   # Power going into the battery (positive power, charging)
   - platform: template
-    name: "LifePO4 Charging Power"
-    id: lifepo4_charging_power
+    name: "Battery Charging Power"
+    id: battery_charging_power
     unit_of_measurement: "W"
     lambda: |-
-      if (id(lifepo4_power).state > 0) {
-        return abs(id(lifepo4_power).state);
+      if (id(battery_power).state > 0) {
+        return abs(id(battery_power).state);
       } else {
         return 0.0;
       }
@@ -108,12 +100,12 @@ sensor:
 
   # Power going out of the battery (negative power, discharging)
   - platform: template
-    name: "LifePO4 Discharging Power"
-    id: lifepo4_discharging_power
+    name: "Battery Discharging Power"
+    id: battery_discharging_power
     unit_of_measurement: "W"
     lambda: |-
-      if (id(lifepo4_power).state < 0) {
-        return abs(id(lifepo4_power).state);
+      if (id(battery_power).state < 0) {
+        return abs(id(battery_power).state);
       } else {
         return 0.0;
       }
@@ -123,9 +115,9 @@ sensor:
 
   # Integrating the charging power (Wh)
   - platform: integration
-    name: "LifePO4 Energy In"
-    id: lifepo4_energy_in
-    sensor: lifepo4_charging_power
+    name: "Battery Energy In"
+    id: battery_energy_in
+    sensor: battery_charging_power
     unit_of_measurement: "Wh"
     time_unit: h
     accuracy_decimals: 0
@@ -135,9 +127,9 @@ sensor:
 
   # Integrating the discharging power (Wh)
   - platform: integration
-    name: "LifePO4 Energy Out"
-    id: lifepo4_energy_out
-    sensor: lifepo4_discharging_power
+    name: "Battery Energy Out"
+    id: battery_energy_out
+    sensor: battery_discharging_power
     unit_of_measurement: "Wh"
     time_unit: h
     accuracy_decimals: 0
@@ -147,20 +139,20 @@ sensor:
 
 
   - platform: template
-    name: "LifePO4 SOC"
-    id: lifepo4_soc
+    name: "Battery SOC"
+    id: battery_soc
     unit_of_measurement: "%"
     accuracy_decimals: 1
     lambda: |-
 
-      float energy_in = id(lifepo4_energy_in).state;
-      float energy_out = id(lifepo4_energy_out).state;
-      float voltage = id(esp32_pumps_battery_voltage).state;
+      float energy_in = id(battery_energy_in).state;
+      float energy_out = id(battery_energy_out).state;
+      float voltage = id(battery_voltage).state;
 
       static int low_voltage_count = 0;
       static int high_voltage_count = 0;
 
-      ESP_LOGI("soc", "Current SOC: %.2f%%", id(lifepo4_soc).state);
+      ESP_LOGI("soc", "Current SOC: %.2f%%", id(battery_soc).state);
 
       ESP_LOGI("soc", "Energy In: %.6f Wh, Energy Out: %.6f Wh", energy_in, energy_out);
       ESP_LOGI("soc", "Energy In Last: %.6f Wh, Energy Out Last: %.6f Wh", id(energy_in_last_global), id(energy_out_last_global));
@@ -184,8 +176,8 @@ sensor:
         if (high_voltage_count >= 10) {  // Require 10 consecutive high voltage readings
           id(initial_soc_global) = 100.0;
           // Set energy last in and out to zero the energy delta
-          id(energy_in_last_global) = id(lifepo4_energy_in).state;
-          id(energy_out_last_global) = id(lifepo4_energy_out).state;
+          id(energy_in_last_global) = id(battery_energy_in).state;
+          id(energy_out_last_global) = id(battery_energy_out).state;
 
           ESP_LOGI("soc", "Voltage dropped below min. SOC set to 100%%, energy delta reset.");
           return 100.0;
@@ -200,8 +192,8 @@ sensor:
         if (low_voltage_count >= 10) {  // Require 10 consecutive low voltage readings
           id(initial_soc_global) = 0.0;
           // Set energy last in and out to zero the energy delta
-          id(energy_in_last_global) = id(lifepo4_energy_in).state;
-          id(energy_out_last_global) = id(lifepo4_energy_out).state;
+          id(energy_in_last_global) = id(battery_energy_in).state;
+          id(energy_out_last_global) = id(battery_energy_out).state;
 
           ESP_LOGI("soc", "Voltage dropped below min. SOC set to 0%%, energy delta reset.");
           return 0.0;
@@ -259,14 +251,14 @@ number:
           id(initial_soc_global) = x;
           
           // Set energy last in and out to zero the energy delta
-          id(energy_in_last_global) = id(lifepo4_energy_in).state;
-          id(energy_out_last_global) = id(lifepo4_energy_out).state;
+          id(energy_in_last_global) = id(battery_energy_in).state;
+          id(energy_out_last_global) = id(battery_energy_out).state;
           
           ESP_LOGI("main", "SOC UPDATED. Initial SOC set to %.1f", x);
           ESP_LOGI("main", "New Energy In Last: %.6f Wh, New Energy Out Last: %.6f Wh", id(energy_in_last_global), id(energy_out_last_global));
 
           // Force SOC recalculation immediately
-          id(lifepo4_soc).update();
+          id(battery_soc).update();
 
   - platform: template
     name: "Battery Capacity"
@@ -337,5 +329,3 @@ number:
     on_value:
       - lambda: |-
           id(discharging_efficiency_global) = x / 100.0;
-
-
